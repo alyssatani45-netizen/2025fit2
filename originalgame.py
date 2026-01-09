@@ -4,18 +4,18 @@ from dataclasses import dataclass
 
 W, H = 256, 256
 
-# 画像を使う（あなたのpyxresを使うので True）
+# 画像を使う
 USE_SPRITES = True
 
 TARGET_STACK = 12
 PANCAKE_H = 16
 
-# あなたのファイル名に置換済み
+# 画像たち
 ASSET_PANCAKE = "pancake.pyxres"
 ASSET_BURNT = "kogepancake.pyxres"
 ASSET_BUTTER = "butter2.pyxres"
 
-# スプライトサイズ（もし違うならここだけ変えてね）
+
 SPR_W, SPR_H = 16, 16
 
 V_STEP=SPR_H
