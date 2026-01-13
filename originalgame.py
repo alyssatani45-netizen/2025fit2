@@ -48,7 +48,7 @@ class FallingItem:
 
 class App:
     def __init__(self):
-        pyxel.init(W, H, title="Pancake Stack (Pyxel)")
+        pyxel.init(W, H, title="Pancake Stack")
 
         if USE_SPRITES:
             self.load_three_assets_into_one_bank()
