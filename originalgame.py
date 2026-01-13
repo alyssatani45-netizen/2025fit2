@@ -1,259 +1,239 @@
 import pyxel
 import random
-from dataclasses import dataclass
 
+# =====================
+# 1) 設定（ここだけ触れば調整できる）
+# =====================
 W, H = 256, 256
 
-# 画像を使う
-USE_SPRITES = True
+# 画像ファイル（.py と同じフォルダに置く）
+PANCAKE_FILE = "pancake.pyxres"
+BURNT_FILE   = "kogepancake.pyxres"
+BUTTER_FILE  = "butter2.pyxres"
 
-TARGET_STACK = 12
-PANCAKE_H = 16
-
-# 画像たち
-ASSET_PANCAKE = "pancake.pyxres"
-ASSET_BURNT = "kogepancake.pyxres"
-ASSET_BUTTER = "butter2.pyxres"
-
-
+# スプライト（画像）のサイズ
 SPR_W, SPR_H = 16, 16
 
-V_STEP=SPR_H
+# どれだけ積んだらバターを出すか
+TARGET_STACK = 12
 
-# 1枚の img(0) に並べて配置する場所（v方向に積む）
-# pancake: (0,0), burnt: (0,8), butter: (0,16)
-SPR_PANCAKE = dict(img=0, u=0, v=0,  w=SPR_W, h=SPR_H)
-SPR_BURNT   = dict(img=0, u=0, v= V_STEP,  w=SPR_W, h=SPR_H)
-SPR_BUTTER  = dict(img=0, u=0, v=V_STEP*2, w=SPR_W, h=SPR_H)
-
-STATE_TITLE = 0
-STATE_PLAY = 1
-STATE_GAMEOVER = 2
-STATE_CLEAR = 3
-
-KIND_PANCAKE = 0
-KIND_BURNT = 1
-KIND_BUTTER = 2
+# 積み上げの間隔（スプライト高さと同じが分かりやすい）
+STACK_STEP_Y = 16
 
 
-@dataclass
-class FallingItem:
-    kind: int
-    x: float
-    y: float
-    vy: float
-    w: int
-    h: int
+# =====================
+# 2) 小さい便利関数（「ぶつかった？」判定）
+# =====================
+def hit(ax, ay, aw, ah, bx, by, bw, bh):
+    """四角形Aと四角形Bが重なっているなら True"""
+    return not (ax + aw < bx or bx + bw < ax or ay + ah < by or by + bh < ay)
 
 
 class App:
     def __init__(self):
-        pyxel.init(W, H, title="Pancake Stack")
+        pyxel.init(W, H, title="Pancake Stack (Simple)")
 
-        if USE_SPRITES:
-            self.load_three_assets_into_one_bank()
+        # ゲームの変数をまとめて初期化
+        self.restart()
 
-        self.state = STATE_TITLE
-        self.reset()
         pyxel.run(self.update, self.draw)
 
-    # -----------------------------
-    # 3つのpyxresから画像を読み出して img(0) にまとめる
-    # -----------------------------
-    def grab_region(self, img_bank: int, x: int, y: int, w: int, h: int):
-        im = pyxel.image(img_bank)
-        data = []
-        for yy in range(h):
-            row = []
-            for xx in range(w):
-                row.append(im.pget(x + xx, y + yy))
-            data.append(row)
-        return data
+    # =====================
+    # 3) リスタート（全部初期化）
+    # =====================
+    def restart(self):
+        # パッド（受ける板）
+        self.pad_w = 56
+        self.pad_h = 10
+        self.pad_x = (W - self.pad_w) // 2
+        self.pad_y = H - 28
 
-    def paste_region(self, img_bank: int, dst_x: int, dst_y: int, data):
-        im = pyxel.image(img_bank)
-        h = len(data)
-        w = len(data[0]) if h > 0 else 0
-        for yy in range(h):
-            for xx in range(w):
-                im.pset(dst_x + xx, dst_y + yy, data[yy][xx])
-
-    def load_three_assets_into_one_bank(self):
-        # 前提：それぞれのpyxresの img(0) の (0,0) にスプライトが置かれている
-        pyxel.load(ASSET_PANCAKE)
-        pancake_data = self.grab_region(0, 0, 0, SPR_W, SPR_H)
-
-        pyxel.load(ASSET_BURNT)
-        burnt_data = self.grab_region(0, 0, 0, SPR_W, SPR_H)
-
-        pyxel.load(ASSET_BUTTER)
-        butter_data = self.grab_region(0, 0, 0, SPR_W, SPR_H)
-
-        # 最後に img(0) を「統合スプライトシート」として再構築
-        self.paste_region(0, SPR_PANCAKE["u"], SPR_PANCAKE["v"], pancake_data)
-        self.paste_region(0, SPR_BURNT["u"],   SPR_BURNT["v"],   burnt_data)
-        self.paste_region(0, SPR_BUTTER["u"],  SPR_BUTTER["v"],  butter_data)
-
-    # -----------------------------
-    # ゲーム本体
-    # -----------------------------
-    def reset(self):
-        self.paddle_w = 56
-        self.paddle_h = 10
-        self.paddle_x = (W - self.paddle_w) // 2
-        self.paddle_y = H - 28
-
+        # 積んだ枚数
         self.stack = 0
-        self.item: FallingItem | None = None
 
+        # いま落ちている物（無ければ None）
+        # item は dict で持つ（初心者に分かりやすい）
+        # 例: {"kind":"pancake", "x":..., "y":..., "vy":...}
+        self.item = None
+
+        # バターをもう出したか
+        self.butter_spawned = False
+
+        # ゲームの状態（文字で持つ：分かりやすさ重視）
+        # "title" / "play" / "gameover" / "clear"
+        self.mode = "title"
+
+        # 出現タイミング用
         self.frame = 0
         self.spawn_interval = 32
-        self.butter_spawned = False
-        self.flash = 0
 
-    def move_paddle(self):
-        speed = 3.2
-        dx = 0
+    # =====================
+    # 4) パッド移動
+    # =====================
+    def move_pad(self):
+        speed = 3
+
         if pyxel.btn(pyxel.KEY_LEFT) or pyxel.btn(pyxel.KEY_A) or pyxel.btn(pyxel.GAMEPAD1_BUTTON_DPAD_LEFT):
-            dx -= speed
+            self.pad_x -= speed
         if pyxel.btn(pyxel.KEY_RIGHT) or pyxel.btn(pyxel.KEY_D) or pyxel.btn(pyxel.GAMEPAD1_BUTTON_DPAD_RIGHT):
-            dx += speed
+            self.pad_x += speed
 
-        self.paddle_x = max(0, min(W - self.paddle_w, self.paddle_x + dx))
+        # 画面外に出ないようにする
+        self.pad_x = max(0, min(W - self.pad_w, self.pad_x))
 
-    def spawn_item(self):
+    # =====================
+    # 5) 落下物を作る（1個だけ落とす）
+    # =====================
+    def spawn_item_if_needed(self):
+        # すでに落ちているなら作らない
         if self.item is not None:
             return
 
-        if (self.stack >= TARGET_STACK) and (not self.butter_spawned):
-            kind = KIND_BUTTER
+        # バター出現条件（TARGET_STACK達成後に1回だけ）
+        if self.stack >= TARGET_STACK and not self.butter_spawned:
+            self.item = {"kind": "butter", "x": random.uniform(0, W - SPR_W), "y": -SPR_H, "vy": 1.4}
             self.butter_spawned = True
-            w, h = 20, 10
-            vy = 1.4
-        else:
-            p_burnt = min(0.08 + self.stack * 0.003, 0.18)
-            kind = KIND_BURNT if random.random() < p_burnt else KIND_PANCAKE
-            w, h = 22, 10
-            vy = 1.2 + min(self.stack * 0.04, 1.8)
+            return
 
-        x = random.uniform(0, W - w)
-        y = -h - 2
-        self.item = FallingItem(kind=kind, x=x, y=y, vy=vy, w=w, h=h)
+        # ふつう or 焦げ を出す
+        # 焦げ確率は少しずつ上げる
+        burnt_prob = min(0.08 + self.stack * 0.003, 0.18)
+        kind = "burnt" if random.random() < burnt_prob else "pancake"
+        speed = 1.2 + min(self.stack * 0.04, 1.8)
 
-    def paddle_rect(self):
-        stack_height = self.stack * PANCAKE_H
-        top_y = self.paddle_y - stack_height
-        return (self.paddle_x, top_y, self.paddle_w, self.paddle_h + stack_height)
+        self.item = {"kind": kind, "x": random.uniform(0, W - SPR_W), "y": -SPR_H, "vy": speed}
 
-    def overlaps(self, ax, ay, aw, ah, bx, by, bw, bh):
-        return not (ax + aw < bx or bx + bw < ax or ay + ah < by or by + bh < ay)
-
+    # =====================
+    # 6) 当たり判定（取ったらどうする？）
+    # =====================
     def check_catch(self):
         if self.item is None:
             return
 
-        px, py, pw, ph = self.paddle_rect()
-        it = self.item
+        # 「積み上がっている高さ」ぶん、当たり判定を上に伸ばす（積むゲームっぽくなる）
+        stack_height = self.stack * STACK_STEP_Y
+        pad_hit_x = self.pad_x
+        pad_hit_y = self.pad_y - stack_height
+        pad_hit_w = self.pad_w
+        pad_hit_h = self.pad_h + stack_height
 
-        if self.overlaps(it.x, it.y, it.w, it.h, px, py, pw, ph):
-            if it.kind == KIND_BURNT:
-                self.state = STATE_GAMEOVER
-                self.flash = 15
-            elif it.kind == KIND_PANCAKE:
+        # 落下物の四角
+        it_x = self.item["x"]
+        it_y = self.item["y"]
+
+        if hit(it_x, it_y, SPR_W, SPR_H, pad_hit_x, pad_hit_y, pad_hit_w, pad_hit_h):
+            # 取った！
+            if self.item["kind"] == "burnt":
+                self.mode = "gameover"
+            elif self.item["kind"] == "pancake":
                 self.stack += 1
-            elif it.kind == KIND_BUTTER:
-                self.state = STATE_CLEAR
-                self.flash = 20
-            self.item = None
+            elif self.item["kind"] == "butter":
+                self.mode = "clear"
 
+            self.item = None  # 取ったので消す
+
+    # =====================
+    # 7) update（毎フレーム進行）
+    # =====================
     def update(self):
-        if self.state == STATE_TITLE:
+        # タイトル：Enterで開始
+        if self.mode == "title":
             if pyxel.btnp(pyxel.KEY_RETURN) or pyxel.btnp(pyxel.KEY_SPACE) or pyxel.btnp(pyxel.GAMEPAD1_BUTTON_A):
-                self.reset()
-                self.state = STATE_PLAY
+                self.mode = "play"
             return
 
-        if self.state == STATE_PLAY:
-            self.frame += 1
-            self.move_paddle()
-
-            if (self.frame % self.spawn_interval) == 0:
-                self.spawn_item()
-
-            if self.item is not None:
-                self.item.y += self.item.vy
-                if self.item.y > H + 10:
-                    if self.item.kind == KIND_BUTTER:
-                        self.state = STATE_GAMEOVER
-                        self.flash = 15
-                    self.item = None
-
-            self.check_catch()
-            self.spawn_interval = max(16, 32 - self.stack)
-
-        elif self.state in (STATE_GAMEOVER, STATE_CLEAR):
+        # クリア/ゲームオーバー：Rでやり直し、Escでタイトル
+        if self.mode in ("gameover", "clear"):
             if pyxel.btnp(pyxel.KEY_R) or pyxel.btnp(pyxel.KEY_RETURN) or pyxel.btnp(pyxel.GAMEPAD1_BUTTON_A):
-                self.reset()
-                self.state = STATE_PLAY
+                self.restart()
+                self.mode = "play"
             if pyxel.btnp(pyxel.KEY_ESCAPE):
-                self.state = STATE_TITLE
+                self.restart()
+            return
 
-        if self.flash > 0:
-            self.flash -= 1
+        # プレイ中
+        self.frame += 1
+        self.move_pad()
 
-    def draw_sprite_item(self, kind, x, y):
-        s = SPR_PANCAKE if kind == KIND_PANCAKE else (SPR_BURNT if kind == KIND_BURNT else SPR_BUTTER)
-        pyxel.blt(x, y, s["img"], s["u"], s["v"], s["w"], s["h"], colkey=0)
+        # 一定間隔で落下物を作る
+        if self.frame % self.spawn_interval == 0:
+            self.spawn_item_if_needed()
 
-    def draw_stack(self):
-        for i in range(self.stack):
-            y = self.paddle_y - (i + 1) * PANCAKE_H
-            x = self.paddle_x + (self.paddle_w - 24) // 2
-            if USE_SPRITES:
-                self.draw_sprite_item(KIND_PANCAKE, x, y)
-            else:
-                pyxel.rect(x, y, 24, PANCAKE_H, 10)
+        # 落下物を動かす
+        if self.item is not None:
+            self.item["y"] += self.item["vy"]
 
+            # 画面外に落ちたら消す（バターを落としたら負け）
+            if self.item["y"] > H + 10:
+                if self.item["kind"] == "butter":
+                    self.mode = "gameover"
+                self.item = None
+
+        # 取ったかチェック
+        self.check_catch()
+
+        # 積むほど出現がちょっと早くなる（最低16）
+        self.spawn_interval = max(16, 32 - self.stack)
+
+    # =====================
+    # 8) 画像を描く（必要なファイルを読み込んでから blt）
+    # =====================
+    def draw_sprite(self, kind, x, y):
+        # kind に応じてファイルを切り替える（合体しない方式）
+        if kind == "pancake":
+            pyxel.load(PANCAKE_FILE)
+        elif kind == "burnt":
+            pyxel.load(BURNT_FILE)
+        else:
+            pyxel.load(BUTTER_FILE)
+
+        # img0 の (0,0) を 16x16 描く
+        pyxel.blt(x, y, 0, 0, 0, SPR_W, SPR_H, colkey=0)
+
+    # =====================
+    # 9) draw（毎フレーム描画）
+    # =====================
     def draw(self):
         pyxel.cls(1)
-        if self.flash > 0:
-            pyxel.rect(0, 0, W, H, 7)
 
-        if self.state == STATE_TITLE:
+        # タイトル画面
+        if self.mode == "title":
             pyxel.cls(0)
-            pyxel.text(64, 70, "PANCAKE STACK", 7)
-            pyxel.text(34, 95, "- Catch pancakes to stack them", 6)
-            pyxel.text(34, 108, "- Catch BURNT -> GAME OVER", 6)
-            pyxel.text(34, 121, "- After stacking enough,", 6)
-            pyxel.text(34, 134, "  catch BUTTER -> CLEAR", 6)
-            pyxel.text(44, 168, "Press Enter / Space to Start", 10)
+            pyxel.text(72, 80, "PANCAKE STACK", 7)
+            pyxel.text(36, 110, "Enter/Space: Start", 10)
+            pyxel.text(36, 130, "Catch burnt -> Game Over", 6)
+            pyxel.text(36, 145, "After enough stacks, butter comes!", 6)
             return
 
-        self.draw_stack()
-        pyxel.rect(self.paddle_x, self.paddle_y, self.paddle_w, self.paddle_h, 5)
-        pyxel.rectb(self.paddle_x, self.paddle_y, self.paddle_w, self.paddle_h, 7)
+        # 積み上げ（パンケーキだけ）
+        for i in range(self.stack):
+            y = self.pad_y - (i + 1) * STACK_STEP_Y
+            x = self.pad_x + (self.pad_w - SPR_W) // 2
+            self.draw_sprite("pancake", x, y)
 
+        # パッド
+        pyxel.rect(self.pad_x, self.pad_y, self.pad_w, self.pad_h, 5)
+        pyxel.rectb(self.pad_x, self.pad_y, self.pad_w, self.pad_h, 7)
+
+        # 落下物
         if self.item is not None:
-            if USE_SPRITES:
-                self.draw_sprite_item(self.item.kind, self.item.x, self.item.y)
-            else:
-                pyxel.rect(self.item.x, self.item.y, self.item.w, self.item.h, 7)
+            self.draw_sprite(self.item["kind"], self.item["x"], self.item["y"])
 
+        # 表示
         pyxel.text(8, 8, f"STACK: {self.stack}/{TARGET_STACK}", 7)
         if self.stack >= TARGET_STACK and not self.butter_spawned:
             pyxel.text(8, 18, "BUTTER INCOMING!", 10)
-        elif self.butter_spawned and self.state == STATE_PLAY:
-            pyxel.text(8, 18, "CATCH THE BUTTER!", 10)
 
-        if self.state == STATE_GAMEOVER:
-            pyxel.rect(0, 90, W, 76, 0)
+        # 結果画面
+        if self.mode == "gameover":
+            pyxel.rect(0, 90, W, 70, 0)
             pyxel.text(96, 110, "GAME OVER", 8)
-            pyxel.text(58, 128, "R/Enter: Retry   Esc: Title", 7)
+            pyxel.text(50, 128, "R/Enter: Retry  Esc: Title", 7)
 
-        if self.state == STATE_CLEAR:
-            pyxel.rect(0, 90, W, 76, 0)
-            pyxel.text(106, 110, "CLEAR!", 11)
-            pyxel.text(52, 128, "R/Enter: Play Again   Esc: Title", 7)
+        if self.mode == "clear":
+            pyxel.rect(0, 90, W, 70, 0)
+            pyxel.text(110, 110, "CLEAR!", 11)
+            pyxel.text(50, 128, "R/Enter: Play Again  Esc: Title", 7)
 
 
 if __name__ == "__main__":
