@@ -240,5 +240,5 @@ class App:
             pyxel.text(50, 128, "R/Enter: Play Again  Esc: Title", 7)
 
 
-if __name__ == "__main__":
-    App()
+
+App()
