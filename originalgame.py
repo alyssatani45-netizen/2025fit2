@@ -97,7 +97,7 @@ class App:
 
         # ふつう or 焦げ を出す
         # 焦げ確率は少しずつ上げる
-        burnt_prob = min(0.08 + self.stack * 0.003, 0.18)
+        burnt_prob = min(0.1 + self.stack * 0.05, 0.6)
         kind = "burnt" if random.random() < burnt_prob else "pancake"
         speed = 1.2 + min(self.stack * 0.04, 1.8)
 
